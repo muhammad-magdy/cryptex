@@ -259,11 +259,12 @@ function CryptoAdvisor() {
     if (!tickers.length) return [];
 
     // Calculate median volume to detect spikes
-    const volumes = tickers.map(t => parseFloat(t.quoteVolume)).sort((a,b)=>a-b);
+    const volumes = tickers.filter(t=>t&&t.quoteVolume).map(t => parseFloat(t.quoteVolume)).filter(v=>!isNaN(v)).sort((a,b)=>a-b);
     const medianVol = volumes[Math.floor(volumes.length/2)];
 
     return tickers
       .filter(t => {
+        if (!t || !t.symbol || !t.lastPrice || !t.quoteVolume) return false;
         const vol = parseFloat(t.quoteVolume);
         const price = parseFloat(t.lastPrice);
         return vol >= MIN_VOLUME_USD && price > 0 && t.symbol.endsWith("USDT");
@@ -310,13 +311,18 @@ function CryptoAdvisor() {
       fetch(NEWS_URL).then(r=>r.json()),
     ]);
 
-    if (binanceRes.status==="fulfilled" && Array.isArray(binanceRes.value)) {
-      newSources.binance = true;
-      const usdtPairs = binanceRes.value.filter(t=>t.symbol.endsWith("USDT"));
-      setAllTickers(usdtPairs);
-      setTotalScanned(usdtPairs.length);
-      const processed = processMovers(usdtPairs);
-      setMovers(processed);
+    if (binanceRes.status==="fulfilled") {
+      // Binance sometimes returns an object with a msg field on error
+      const raw = binanceRes.value;
+      const tickerArray = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : null);
+      if (tickerArray && tickerArray.length > 0) {
+        newSources.binance = true;
+        const usdtPairs = tickerArray.filter(t=>t && t.symbol && t.symbol.endsWith("USDT"));
+        setAllTickers(usdtPairs);
+        setTotalScanned(usdtPairs.length);
+        const processed = processMovers(usdtPairs);
+        setMovers(processed);
+      }
     }
 
     if (fngRes.status==="fulfilled") {
