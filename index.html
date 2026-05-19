@@ -55,6 +55,17 @@ const NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&limit=
 // CoinGecko fallback for price data if Binance is blocked
 const CG_MARKETS_URL = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&sparkline=false&price_change_percentage=24h&x_cg_demo_api_key=CG-sWWt7Y6qeWf8ub4vF3k5thdA`;
 
+// ── PAPER TRADING STORAGE ────────────────────────────────────
+const STORAGE_KEY = "cryptex_trades_v1";
+
+function loadTrades() {
+  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch(e) { return []; }
+}
+function saveTrades(trades) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(trades)); } catch(e) {}
+}
+
 // Volume spike threshold — coin's volume must be X times its "normal" to alert
 const VOL_SPIKE_THRESHOLD = 2.5;
 // Minimum 24h volume in USD to consider (filter out dust)
@@ -175,12 +186,107 @@ function SpikeBar({ value }) {
   );
 }
 
+// ── BUY TRADE MODAL ──────────────────────────────────────────
+function TradeModal({ coin, onConfirm, onClose }) {
+  const [amount, setAmount] = useState("100");
+  if (!coin) return null;
+  const numAmount = parseFloat(amount) || 0;
+  const tokens = numAmount > 0 && coin.price > 0 ? numAmount / coin.price : 0;
+  return (
+    <div onClick={onClose} style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.85)",
+      display:"flex", alignItems:"center", justifyContent:"center",
+      zIndex:1000, padding:20, backdropFilter:"blur(4px)"
+    }}>
+      <div onClick={(e)=>e.stopPropagation()} style={{
+        background:"#0a0f1e", border:"1px solid #1a2535", borderRadius:14,
+        padding:24, width:"100%", maxWidth:400, fontFamily:"'DM Sans',sans-serif"
+      }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:18 }}>
+          <div>
+            <div style={{ fontSize:10, color:"#475569", letterSpacing:2, fontFamily:"'Space Mono',monospace" }}>PAPER TRADE</div>
+            <div style={{ fontSize:22, fontWeight:700, color:"#e2e8f0", fontFamily:"'Space Mono',monospace", marginTop:2 }}>{coin.symbol.replace("USDT","")}</div>
+            <div style={{ fontSize:11, color:"#64748b" }}>{coin.name}</div>
+          </div>
+          <button onClick={onClose} style={{ background:"transparent", border:"none", color:"#475569", fontSize:24, cursor:"pointer", padding:0, lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={{ background:"rgba(0,0,0,0.3)", borderRadius:10, padding:14, marginBottom:16 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <span style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace" }}>ENTRY PRICE</span>
+            <span style={{ fontSize:13, color:"#e2e8f0", fontWeight:600, fontFamily:"'Space Mono',monospace" }}>${fmt(coin.price)}</span>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+            <span style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace" }}>GRADE</span>
+            <span style={{ fontSize:13, color:coin.gradeColor, fontWeight:700, fontFamily:"'Space Mono',monospace" }}>{coin.grade}</span>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between" }}>
+            <span style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace" }}>SIGNAL</span>
+            <span style={{ fontSize:13, color:SIG_COLOR[coin.signal], fontWeight:700, fontFamily:"'Space Mono',monospace" }}>{coin.signal.replace("_"," ")}</span>
+          </div>
+        </div>
+
+        <div style={{ marginBottom:16 }}>
+          <label style={{ fontSize:10, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", display:"block", marginBottom:6 }}>AMOUNT (€)</label>
+          <input
+            type="number"
+            value={amount}
+            onChange={(e)=>setAmount(e.target.value)}
+            autoFocus
+            style={{
+              width:"100%", padding:"12px 14px", background:"rgba(0,0,0,0.4)",
+              border:"1px solid #1e3a5f", borderRadius:8, color:"#e2e8f0",
+              fontSize:18, fontFamily:"'Space Mono',monospace", outline:"none"
+            }}
+          />
+          <div style={{ display:"flex", gap:6, marginTop:8 }}>
+            {[25,50,100,250].map(v=>(
+              <button key={v} onClick={()=>setAmount(String(v))} style={{
+                flex:1, padding:"5px", borderRadius:5,
+                background:"rgba(255,255,255,0.03)", border:"1px solid #1a2535",
+                color:"#64748b", fontSize:10, fontWeight:700, cursor:"pointer",
+                fontFamily:"'Space Mono',monospace"
+              }}>€{v}</button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ background:"rgba(0,180,255,0.05)", border:"1px solid rgba(0,180,255,0.15)", borderRadius:8, padding:"10px 12px", marginBottom:16, fontSize:11 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", color:"#94a3b8" }}>
+            <span>You will get:</span>
+            <span style={{ fontFamily:"'Space Mono',monospace", color:"#00b4ff", fontWeight:700 }}>{tokens.toFixed(coin.price>1?4:2)} {coin.symbol.replace("USDT","")}</span>
+          </div>
+        </div>
+
+        <button onClick={()=>onConfirm(coin, numAmount)} disabled={numAmount<=0} style={{
+          width:"100%", padding:"12px", borderRadius:8,
+          background:numAmount>0?"linear-gradient(135deg,#00ff88,#00b4ff)":"#1a2535",
+          border:"none", color:numAmount>0?"#060810":"#475569",
+          fontSize:12, fontWeight:700, letterSpacing:2,
+          cursor:numAmount>0?"pointer":"not-allowed", fontFamily:"'Space Mono',monospace"
+        }}>
+          CONFIRM PAPER TRADE
+        </button>
+        <div style={{ marginTop:10, fontSize:9, color:"#334155", textAlign:"center", letterSpacing:1, fontFamily:"'Space Mono',monospace" }}>
+          PAPER ONLY · NO REAL MONEY · SAVED LOCALLY
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── EARLY MOVER CARD ─────────────────────────────────────────
-function MoverCard({ coin, onAnalyze, analyzing }) {
+function MoverCard({ coin, onAnalyze, analyzing, onTrade, myTrade, onCloseTrade }) {
   const isPos = coin.change24h >= 0;
   const col = SIG_COLOR[coin.signal];
   const isAlert = coin.volSpike >= VOL_SPIKE_THRESHOLD;
   const [showGrade, setShowGrade] = useState(false);
+  // Live P&L if user has an open trade for this coin
+  const tradePnl = myTrade ? {
+    pct: ((coin.price - myTrade.entryPrice) / myTrade.entryPrice) * 100,
+    eur: (coin.price - myTrade.entryPrice) * myTrade.tokens,
+  } : null;
+  const pnlCol = tradePnl ? (tradePnl.pct >= 0 ? "#00ff88" : "#f87171") : null;
 
   return (
     <div style={{
@@ -321,15 +427,46 @@ function MoverCard({ coin, onAnalyze, analyzing }) {
         </div>
       )}
 
-      <button onClick={()=>onAnalyze(coin)} disabled={analyzing===coin.symbol} style={{
-        width:"100%", padding:"8px", borderRadius:8,
-        background:analyzing===coin.symbol?`${col}06`:`${col}10`,
-        border:`1px solid ${col}28`, color:col, fontSize:10, fontWeight:700,
-        letterSpacing:1.5, cursor:analyzing===coin.symbol?"not-allowed":"pointer",
-        fontFamily:"'Space Mono',monospace", transition:"background 0.2s"
-      }}>
-        {analyzing===coin.symbol ? "⟳  ANALYZING..." : "▶  DAY TRADE ANALYSIS"}
-      </button>
+      {/* Live P&L for open trade */}
+      {myTrade && (
+        <div style={{ background:`${pnlCol}10`, border:`1px solid ${pnlCol}40`, borderRadius:8, padding:"8px 12px", marginBottom:10, position:"relative" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+            <span style={{ fontSize:9, color:"#94a3b8", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>📍 YOUR TRADE</span>
+            <span style={{ fontSize:11, fontWeight:700, color:pnlCol, fontFamily:"'Space Mono',monospace" }}>
+              {tradePnl.pct >= 0 ? "+" : ""}{tradePnl.pct.toFixed(2)}%
+            </span>
+          </div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontFamily:"'Space Mono',monospace" }}>
+            <span style={{ color:"#475569" }}>Entry ${fmt(myTrade.entryPrice)} · €{myTrade.amountEur.toFixed(0)}</span>
+            <span style={{ color:pnlCol, fontWeight:700 }}>{tradePnl.eur >= 0 ? "+" : ""}€{tradePnl.eur.toFixed(2)}</span>
+          </div>
+          <button onClick={(e)=>{ e.stopPropagation(); onCloseTrade(myTrade.id, coin.price); }} style={{ marginTop:6, width:"100%", padding:"4px", borderRadius:5, background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.3)", color:"#f87171", fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>
+            CLOSE TRADE @ ${fmt(coin.price)}
+          </button>
+        </div>
+      )}
+
+      <div style={{ display:"grid", gridTemplateColumns: myTrade ? "1fr" : "1fr 1fr", gap:6 }}>
+        <button onClick={()=>onAnalyze(coin)} disabled={analyzing===coin.symbol} style={{
+          padding:"8px", borderRadius:8,
+          background:analyzing===coin.symbol?`${col}06`:`${col}10`,
+          border:`1px solid ${col}28`, color:col, fontSize:9, fontWeight:700,
+          letterSpacing:1.2, cursor:analyzing===coin.symbol?"not-allowed":"pointer",
+          fontFamily:"'Space Mono',monospace", transition:"background 0.2s"
+        }}>
+          {analyzing===coin.symbol ? "⟳ ANALYZING" : "▶ AI ANALYSIS"}
+        </button>
+        {!myTrade && (
+          <button onClick={(e)=>{ e.stopPropagation(); onTrade && onTrade(); }} style={{
+            padding:"8px", borderRadius:8,
+            background:"rgba(0,180,255,0.10)", border:"1px solid rgba(0,180,255,0.30)",
+            color:"#00b4ff", fontSize:9, fontWeight:700, letterSpacing:1.2,
+            cursor:"pointer", fontFamily:"'Space Mono',monospace"
+          }}>
+            💰 BUY THIS
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -364,7 +501,9 @@ function CryptoAdvisor() {
   const [analyzing, setAnalyzing]     = useState(null);
   const [globalPred, setGlobalPred]   = useState(null);
   const [loadingGlobal, setLoadingGlobal] = useState(false);
-  const [tab, setTab]                 = useState("movers"); // movers | watchlist | news
+  const [tab, setTab]                 = useState("movers"); // movers | trades | news
+  const [trades, setTrades]           = useState(() => loadTrades());
+  const [tradeModal, setTradeModal]   = useState(null); // {coin} when add-trade modal is open
   const [filter, setFilter]           = useState("ALL");
   const [sortBy, setSortBy]           = useState("grade");
   const [minSpike, setMinSpike]       = useState(2.0);
@@ -518,10 +657,50 @@ function CryptoAdvisor() {
   }, [processMovers, fetchBinanceTickers]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { saveTrades(trades); }, [trades]);
   useEffect(() => {
     const t = setInterval(fetchAll, 90000); // re-scan every 90 seconds
     return () => clearInterval(t);
   }, [fetchAll]);
+
+  // ── Open a paper trade ────────────────────────────────────
+  const openTrade = (coin, amountEur) => {
+    const tokens = amountEur / coin.price;
+    const newTrade = {
+      id: Date.now() + "_" + coin.symbol,
+      symbol: coin.symbol,
+      name: coin.name,
+      entryPrice: coin.price,
+      entryGrade: coin.grade,
+      entrySignal: coin.signal,
+      amountEur: parseFloat(amountEur),
+      tokens: tokens,
+      openedAt: new Date().toISOString(),
+      status: "open",
+    };
+    setTrades(prev => [newTrade, ...prev]);
+    setTradeModal(null);
+  };
+
+  const closeTrade = (tradeId, currentPrice) => {
+    setTrades(prev => prev.map(t => t.id === tradeId ? {
+      ...t,
+      status: "closed",
+      exitPrice: currentPrice,
+      closedAt: new Date().toISOString(),
+      pnlEur: (currentPrice - t.entryPrice) * t.tokens,
+      pnlPct: ((currentPrice - t.entryPrice) / t.entryPrice) * 100,
+    } : t));
+  };
+
+  const deleteTrade = (tradeId) => {
+    if (!confirm("Delete this trade record?")) return;
+    setTrades(prev => prev.filter(t => t.id !== tradeId));
+  };
+
+  // Build a price lookup for live P&L
+  const priceMap = {};
+  movers.forEach(c => { priceMap[c.symbol] = c.price; });
 
   // ── AI: Analyze one coin ──────────────────────────────────
   const analyzeOne = async (coin) => {
@@ -778,9 +957,12 @@ Reply ONLY with valid JSON (no markdown):
           </div>
         )}
 
+        {/* ── TRADE MODAL ── */}
+        {tradeModal && <TradeModal coin={tradeModal.coin} onConfirm={openTrade} onClose={()=>setTradeModal(null)}/>}
+
         {/* ── TABS ── */}
         <div style={{ display:"flex", gap:4, marginBottom:14, borderBottom:"1px solid #0d1526", paddingBottom:10, flexWrap:"wrap" }}>
-          {[["movers","⚡ Early Movers"],["news","📰 News"]].map(([t,l])=>(
+          {[["movers","⚡ Early Movers"],["trades","💼 My Trades"],["news","📰 News"]].map(([t,l])=>(
             <button key={t} onClick={()=>setTab(t)} style={{ padding:"6px 16px", borderRadius:6, background:tab===t?"rgba(0,255,136,0.08)":"transparent", border:`1px solid ${tab===t?"rgba(0,255,136,0.2)":"transparent"}`, color:tab===t?"#00ff88":"#334155", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>
               {l}
             </button>
@@ -839,9 +1021,10 @@ Reply ONLY with valid JSON (no markdown):
                   SHOWING {displayed.length} MOVERS · MIN {minSpike}x VOL SPIKE · SORTED BY {sortBy.toUpperCase()}
                 </div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(285px,1fr))", gap:14 }}>
-                  {displayed.map(coin=>(
-                    <MoverCard key={coin.symbol} coin={coin} onAnalyze={analyzeOne} analyzing={analyzing}/>
-                  ))}
+                  {displayed.map(coin=>{
+                    const myTrade = trades.find(t => t.symbol === coin.symbol && t.status === "open");
+                    return <MoverCard key={coin.symbol} coin={coin} onAnalyze={analyzeOne} analyzing={analyzing} onTrade={()=>setTradeModal({coin})} myTrade={myTrade} onCloseTrade={closeTrade}/>;
+                  })}
                 </div>
                 {displayed.length===0 && !binanceErr && (
                   <div style={{ textAlign:"center", padding:"60px 20px", color:"#475569" }}>
@@ -852,6 +1035,134 @@ Reply ONLY with valid JSON (no markdown):
               </>
             )}
           </>
+        )}
+
+        {/* ── TRADES TAB ── */}
+        {tab==="trades" && (
+          <div>
+            {(() => {
+              const openTrades = trades.filter(t=>t.status==="open");
+              const closedTrades = trades.filter(t=>t.status==="closed");
+              const openWithLive = openTrades.map(t => {
+                const livePrice = priceMap[t.symbol] || t.entryPrice;
+                const pct = ((livePrice - t.entryPrice) / t.entryPrice) * 100;
+                const eur = (livePrice - t.entryPrice) * t.tokens;
+                return { ...t, livePrice, livePct: pct, liveEur: eur };
+              });
+              const totalInvested = openTrades.reduce((s,t)=>s+t.amountEur, 0);
+              const totalPnlEur = openWithLive.reduce((s,t)=>s+t.liveEur, 0);
+              const totalPnlPct = totalInvested > 0 ? (totalPnlEur/totalInvested)*100 : 0;
+              const closedPnl = closedTrades.reduce((s,t)=>s+(t.pnlEur||0), 0);
+              const wins = closedTrades.filter(t=>(t.pnlEur||0) > 0).length;
+              const winRate = closedTrades.length > 0 ? (wins/closedTrades.length*100).toFixed(0) : 0;
+
+              return (
+                <>
+                  {/* Portfolio summary */}
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:12, marginBottom:20 }}>
+                    <div style={{ background:"rgba(0,180,255,0.04)", border:"1px solid rgba(0,180,255,0.15)", borderRadius:12, padding:"12px 16px" }}>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:4 }}>INVESTED</div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:20, fontWeight:700, color:"#e2e8f0" }}>€{totalInvested.toFixed(2)}</div>
+                      <div style={{ fontSize:10, color:"#475569", marginTop:2 }}>{openTrades.length} open trade{openTrades.length!==1?"s":""}</div>
+                    </div>
+                    <div style={{ background:(totalPnlEur>=0?"rgba(0,255,136,0.04)":"rgba(248,113,113,0.04)"), border:`1px solid ${totalPnlEur>=0?"rgba(0,255,136,0.20)":"rgba(248,113,113,0.20)"}`, borderRadius:12, padding:"12px 16px" }}>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:4 }}>LIVE P&L</div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:20, fontWeight:700, color:totalPnlEur>=0?"#00ff88":"#f87171" }}>
+                        {totalPnlEur>=0?"+":""}€{totalPnlEur.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize:10, color:totalPnlEur>=0?"#00ff88":"#f87171", marginTop:2, fontFamily:"'Space Mono',monospace" }}>
+                        {totalPnlEur>=0?"+":""}{totalPnlPct.toFixed(2)}%
+                      </div>
+                    </div>
+                    <div style={{ background:"rgba(255,255,255,0.02)", border:"1px solid #1a2535", borderRadius:12, padding:"12px 16px" }}>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:4 }}>CLOSED P&L</div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:20, fontWeight:700, color:closedPnl>=0?"#00ff88":closedPnl<0?"#f87171":"#e2e8f0" }}>
+                        {closedPnl>=0?"+":""}€{closedPnl.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize:10, color:"#475569", marginTop:2 }}>{closedTrades.length} closed</div>
+                    </div>
+                    <div style={{ background:"rgba(255,255,255,0.02)", border:"1px solid #1a2535", borderRadius:12, padding:"12px 16px" }}>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:4 }}>WIN RATE</div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:20, fontWeight:700, color:"#facc15" }}>{winRate}%</div>
+                      <div style={{ fontSize:10, color:"#475569", marginTop:2 }}>{wins} of {closedTrades.length}</div>
+                    </div>
+                  </div>
+
+                  {/* Open trades */}
+                  {openWithLive.length > 0 && (
+                    <>
+                      <div style={{ fontSize:10, color:"#00ff88", fontFamily:"'Space Mono',monospace", letterSpacing:1.5, marginBottom:10 }}>● OPEN TRADES</div>
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))", gap:12, marginBottom:24 }}>
+                        {openWithLive.map(t => {
+                          const pnlCol = t.livePct >= 0 ? "#00ff88" : "#f87171";
+                          const mins = Math.floor((Date.now() - new Date(t.openedAt))/60000);
+                          const dur = mins < 60 ? `${mins}m` : `${Math.floor(mins/60)}h ${mins%60}m`;
+                          return (
+                            <div key={t.id} style={{ background:"rgba(10,14,26,0.97)", border:`1px solid ${pnlCol}30`, borderRadius:12, padding:14 }}>
+                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                                <div>
+                                  <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                                    <span style={{ fontFamily:"'Space Mono',monospace", fontSize:14, fontWeight:700, color:"#e2e8f0" }}>{t.symbol.replace("USDT","")}</span>
+                                    <span style={{ fontSize:9, color:"#475569", fontFamily:"'Space Mono',monospace" }}>· {dur} ago</span>
+                                  </div>
+                                  <div style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{t.tokens.toFixed(t.entryPrice>1?4:2)} tokens · entered ${fmt(t.entryPrice)}</div>
+                                </div>
+                                <div style={{ textAlign:"right" }}>
+                                  <div style={{ fontSize:13, fontFamily:"'Space Mono',monospace", color:pnlCol, fontWeight:700 }}>{t.livePct>=0?"+":""}{t.livePct.toFixed(2)}%</div>
+                                  <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace", color:pnlCol }}>{t.liveEur>=0?"+":""}€{t.liveEur.toFixed(2)}</div>
+                                </div>
+                              </div>
+                              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", marginBottom:10 }}>
+                                <span>Now: ${fmt(t.livePrice)}</span>
+                                <span>Invested: €{t.amountEur.toFixed(2)}</span>
+                                <span>Now worth: €{(t.amountEur + t.liveEur).toFixed(2)}</span>
+                              </div>
+                              <button onClick={()=>closeTrade(t.id, t.livePrice)} style={{ width:"100%", padding:"6px", borderRadius:6, background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.3)", color:"#f87171", fontSize:10, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1.5 }}>
+                                ✕ CLOSE TRADE
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {/* Closed trades */}
+                  {closedTrades.length > 0 && (
+                    <>
+                      <div style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", letterSpacing:1.5, marginBottom:10 }}>○ HISTORY ({closedTrades.length})</div>
+                      <div style={{ background:"rgba(0,0,0,0.3)", border:"1px solid #0f1a2e", borderRadius:10, overflow:"hidden" }}>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 30px", gap:8, padding:"8px 12px", background:"rgba(255,255,255,0.02)", fontSize:9, color:"#334155", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>
+                          <div>SYMBOL</div><div>ENTRY</div><div>EXIT</div><div>P&L €</div><div>P&L %</div><div></div>
+                        </div>
+                        {closedTrades.map(t => {
+                          const col = (t.pnlEur||0) >= 0 ? "#00ff88" : "#f87171";
+                          return (
+                            <div key={t.id} style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 30px", gap:8, padding:"10px 12px", borderTop:"1px solid #0f1a2e", fontSize:11, fontFamily:"'Space Mono',monospace", alignItems:"center" }}>
+                              <div style={{ color:"#e2e8f0", fontWeight:700 }}>{t.symbol.replace("USDT","")}</div>
+                              <div style={{ color:"#94a3b8" }}>${fmt(t.entryPrice)}</div>
+                              <div style={{ color:"#94a3b8" }}>${fmt(t.exitPrice)}</div>
+                              <div style={{ color:col, fontWeight:700 }}>{(t.pnlEur||0)>=0?"+":""}€{(t.pnlEur||0).toFixed(2)}</div>
+                              <div style={{ color:col, fontWeight:700 }}>{(t.pnlPct||0)>=0?"+":""}{(t.pnlPct||0).toFixed(2)}%</div>
+                              <button onClick={()=>deleteTrade(t.id)} style={{ background:"transparent", border:"none", color:"#475569", cursor:"pointer", fontSize:14 }}>×</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {trades.length === 0 && (
+                    <div style={{ textAlign:"center", padding:"60px 20px", color:"#1e2535" }}>
+                      <div style={{ fontSize:36, marginBottom:12 }}>💼</div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", letterSpacing:2, fontSize:11, color:"#475569", marginBottom:6 }}>NO TRADES YET</div>
+                      <div style={{ fontSize:11, color:"#334155" }}>Click "BUY THIS" on any coin in Early Movers to start paper trading</div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
         )}
 
         {/* ── NEWS TAB ── */}
