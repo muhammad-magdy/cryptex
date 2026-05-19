@@ -203,14 +203,14 @@ function MoverCard({ coin, onAnalyze, analyzing }) {
         </div>
       )}
 
-      <button onClick={()=>onAnalyze(coin)} disabled={analyzing===coin.id} style={{
+      <button onClick={()=>onAnalyze(coin)} disabled={analyzing===coin.symbol} style={{
         width:"100%", padding:"8px", borderRadius:8,
-        background:analyzing===coin.id?`${col}06`:`${col}10`,
+        background:analyzing===coin.symbol?`${col}06`:`${col}10`,
         border:`1px solid ${col}28`, color:col, fontSize:10, fontWeight:700,
-        letterSpacing:1.5, cursor:analyzing===coin.id?"not-allowed":"pointer",
+        letterSpacing:1.5, cursor:analyzing===coin.symbol?"not-allowed":"pointer",
         fontFamily:"'Space Mono',monospace", transition:"background 0.2s"
       }}>
-        {analyzing===coin.id ? "⟳  ANALYZING..." : "▶  DAY TRADE ANALYSIS"}
+        {analyzing===coin.symbol ? "⟳  ANALYZING..." : "▶  DAY TRADE ANALYSIS"}
       </button>
     </div>
   );
@@ -253,6 +253,7 @@ function CryptoAdvisor() {
   const [minChange, setMinChange]     = useState(0);
   const [sources, setSources]         = useState({ binance:false, fng:false, news:false });
   const [totalScanned, setTotalScanned] = useState(0);
+  const [binanceErr, setBinanceErr]   = useState(null);
 
   // ── Process Binance tickers into early movers ──────────────
   const processMovers = useCallback((tickers) => {
@@ -306,23 +307,32 @@ function CryptoAdvisor() {
     const newSources = { binance:false, fng:false, news:false };
 
     const [binanceRes, fngRes, newsRes] = await Promise.allSettled([
-      fetch(`${BINANCE}/ticker/24hr`).then(r=>r.json()),
+      fetch(`${BINANCE}/ticker/24hr`).then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }),
       fetch(FNG_URL).then(r=>r.json()),
       fetch(NEWS_URL).then(r=>r.json()),
     ]);
 
     if (binanceRes.status==="fulfilled") {
-      // Binance sometimes returns an object with a msg field on error
       const raw = binanceRes.value;
-      const tickerArray = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : null);
-      if (tickerArray && tickerArray.length > 0) {
-        newSources.binance = true;
-        const usdtPairs = tickerArray.filter(t=>t && t.symbol && t.symbol.endsWith("USDT"));
-        setAllTickers(usdtPairs);
-        setTotalScanned(usdtPairs.length);
-        const processed = processMovers(usdtPairs);
-        setMovers(processed);
+      // Binance returns an error object on rate-limit / geo-block
+      if (raw && raw.code && raw.msg) {
+        setBinanceErr(`Binance API error ${raw.code}: ${raw.msg}`);
+      } else {
+        const tickerArray = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : null);
+        if (tickerArray && tickerArray.length > 0) {
+          newSources.binance = true;
+          setBinanceErr(null);
+          const usdtPairs = tickerArray.filter(t=>t && t.symbol && t.symbol.endsWith("USDT"));
+          setAllTickers(usdtPairs);
+          setTotalScanned(usdtPairs.length);
+          const processed = processMovers(usdtPairs);
+          setMovers(processed);
+        } else {
+          setBinanceErr("No ticker data received from Binance — possibly geo-blocked or rate-limited.");
+        }
       }
+    } else {
+      setBinanceErr(`Failed to reach Binance: ${binanceRes.reason?.message || "Network error"}`);
     }
 
     if (fngRes.status==="fulfilled") {
@@ -393,7 +403,7 @@ Give a specific day trade plan. Reply ONLY with valid JSON (no markdown):
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
         headers:{ "Content-Type":"application/json", "anthropic-dangerous-direct-browser-access":"true" },
-        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:500, messages:[{role:"user",content:prompt}] })
+        body:JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:500, messages:[{role:"user",content:prompt}] })
       });
       if (!res.ok) throw new Error(`API ${res.status}`);
       const data = await res.json();
@@ -418,7 +428,7 @@ Give a specific day trade plan. Reply ONLY with valid JSON (no markdown):
         method:"POST",
         headers:{ "Content-Type":"application/json", "anthropic-dangerous-direct-browser-access":"true" },
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:800,
+          model:"claude-sonnet-4-6", max_tokens:800,
           messages:[{ role:"user", content:`You are a senior crypto day trading analyst scanning for early movers.
 
 SCANNED ${totalScanned} BINANCE PAIRS. TOP VOLUME SPIKES RIGHT NOW:
@@ -637,6 +647,16 @@ Reply ONLY with valid JSON (no markdown):
             )}
             {!loading && (
               <>
+                {binanceErr && (
+                  <div style={{ background:"rgba(248,113,113,0.07)", border:"1px solid rgba(248,113,113,0.22)", borderRadius:10, padding:"14px 18px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:12 }}>
+                    <span style={{ color:"#f87171", fontSize:18 }}>⚠</span>
+                    <div>
+                      <div style={{ fontFamily:"'Space Mono',monospace", fontSize:10, fontWeight:700, color:"#f87171", letterSpacing:1.5, marginBottom:4 }}>BINANCE API ERROR</div>
+                      <div style={{ fontSize:11, color:"#94a3b8" }}>{binanceErr}</div>
+                      <button onClick={fetchAll} style={{ marginTop:8, padding:"4px 12px", borderRadius:5, background:"rgba(248,113,113,0.1)", border:"1px solid rgba(248,113,113,0.3)", color:"#f87171", fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>↺ RETRY</button>
+                    </div>
+                  </div>
+                )}
                 <div style={{ fontSize:10, color:"#1e3a5f", fontFamily:"'Space Mono',monospace", marginBottom:12, letterSpacing:1 }}>
                   SHOWING {displayed.length} MOVERS · MIN {minSpike}x VOL SPIKE · SORTED BY {sortBy.toUpperCase()}
                 </div>
@@ -645,8 +665,8 @@ Reply ONLY with valid JSON (no markdown):
                     <MoverCard key={coin.symbol} coin={coin} onAnalyze={analyzeOne} analyzing={analyzing}/>
                   ))}
                 </div>
-                {displayed.length===0 && (
-                  <div style={{ textAlign:"center", padding:"60px 20px", color:"#1e2535" }}>
+                {displayed.length===0 && !binanceErr && (
+                  <div style={{ textAlign:"center", padding:"60px 20px", color:"#475569" }}>
                     <div style={{ fontSize:36, marginBottom:12 }}>◌</div>
                     <div style={{ fontFamily:"'Space Mono',monospace", letterSpacing:2, fontSize:11 }}>NO COINS MATCH — TRY LOWERING MIN SPIKE</div>
                   </div>
