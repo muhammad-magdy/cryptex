@@ -43,9 +43,17 @@
 // ── API CONFIG ───────────────────────────────────────────────
 const CG_KEY   = "CG-sWWt7Y6qeWf8ub4vF3k5thdA";
 const CG_BASE  = "https://api.coingecko.com/api/v3";
-const BINANCE  = "https://api.binance.com/api/v3";
+// Binance is geo-blocked in Netherlands — use proxy fallbacks
+const BINANCE_ENDPOINTS = [
+  "https://api.binance.com/api/v3",
+  "https://api1.binance.com/api/v3",
+  "https://api2.binance.com/api/v3",
+  "https://api3.binance.com/api/v3",
+];
 const FNG_URL  = "https://api.alternative.me/fng/?limit=1";
 const NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN&limit=20&categories=BTC,ETH,Trading,Altcoin,Market,Regulation";
+// CoinGecko fallback for price data if Binance is blocked
+const CG_MARKETS_URL = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&sparkline=false&price_change_percentage=24h&x_cg_demo_api_key=CG-sWWt7Y6qeWf8ub4vF3k5thdA`;
 
 // Volume spike threshold — coin's volume must be X times its "normal" to alert
 const VOL_SPIKE_THRESHOLD = 2.5;
@@ -254,6 +262,7 @@ function CryptoAdvisor() {
   const [sources, setSources]         = useState({ binance:false, fng:false, news:false });
   const [totalScanned, setTotalScanned] = useState(0);
   const [binanceErr, setBinanceErr]   = useState(null);
+  const [dataSource, setDataSource]   = useState("Binance");
 
   // ── Process Binance tickers into early movers ──────────────
   const processMovers = useCallback((tickers) => {
@@ -301,48 +310,87 @@ function CryptoAdvisor() {
       });
   }, []);
 
+  // ── Try Binance with multiple endpoints ───────────────────
+  const fetchWithTimeout = (url, ms) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  };
+
+  const fetchBinanceTickers = useCallback(async () => {
+    // Try each Binance endpoint
+    for (const endpoint of BINANCE_ENDPOINTS) {
+      try {
+        const res = await fetchWithTimeout(`${endpoint}/ticker/24hr`, 8000);
+        if (!res.ok) continue;
+        const raw = await res.json();
+        if (raw && raw.code) continue;
+        const arr = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : null);
+        if (arr && arr.length > 0) return { data: arr, source: "Binance" };
+      } catch(e) { console.warn("Binance endpoint failed:", endpoint, e.message); continue; }
+    }
+    // Fall back to CoinGecko
+    console.log("Binance blocked, falling back to CoinGecko...");
+    try {
+      const res = await fetchWithTimeout(CG_MARKETS_URL, 10000);
+      if (!res.ok) throw new Error("CoinGecko HTTP " + res.status);
+      const cgData = await res.json();
+      if (!Array.isArray(cgData)) throw new Error("CoinGecko returned non-array");
+      const converted = cgData.map(c => ({
+        symbol: (c.symbol || "").toUpperCase() + "USDT",
+        lastPrice: String(c.current_price || 0),
+        priceChangePercent: String(c.price_change_percentage_24h || 0),
+        highPrice: String(c.high_24h || c.current_price * 1.03 || 0),
+        lowPrice: String(c.low_24h || c.current_price * 0.97 || 0),
+        quoteVolume: String(c.total_volume || 0),
+        openPrice: String((c.current_price || 0) * (1 - (c.price_change_percentage_24h||0)/100)),
+      }));
+      return { data: converted, source: "CoinGecko" };
+    } catch(e) {
+      console.error("CoinGecko fallback failed:", e.message);
+    }
+    return null;
+  }, []);
+
   // ── Fetch everything ──────────────────────────────────────
   const fetchAll = useCallback(async () => {
     setScanning(true);
     const newSources = { binance:false, fng:false, news:false };
 
-    const [binanceRes, fngRes, newsRes] = await Promise.allSettled([
-      fetch(`${BINANCE}/ticker/24hr`).then(r=>{ if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }),
-      fetch(FNG_URL).then(r=>r.json()),
-      fetch(NEWS_URL).then(r=>r.json()),
+    console.log("[CRYPTEX] Starting fetch cycle...");
+
+    const [tickerResult, fngRes, newsRes] = await Promise.allSettled([
+      fetchBinanceTickers().catch(e => { console.error("[CRYPTEX] fetchBinanceTickers threw:", e); return null; }),
+      fetch(FNG_URL).then(r=>r.json()).catch(e => { console.warn("[CRYPTEX] FNG failed:", e.message); return null; }),
+      fetch(NEWS_URL).then(r=>r.json()).catch(e => { console.warn("[CRYPTEX] News failed:", e.message); return null; }),
     ]);
 
-    if (binanceRes.status==="fulfilled") {
-      const raw = binanceRes.value;
-      // Binance returns an error object on rate-limit / geo-block
-      if (raw && raw.code && raw.msg) {
-        setBinanceErr(`Binance API error ${raw.code}: ${raw.msg}`);
-      } else {
-        const tickerArray = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.data) ? raw.data : null);
-        if (tickerArray && tickerArray.length > 0) {
-          newSources.binance = true;
-          setBinanceErr(null);
-          const usdtPairs = tickerArray.filter(t=>t && t.symbol && t.symbol.endsWith("USDT"));
-          setAllTickers(usdtPairs);
-          setTotalScanned(usdtPairs.length);
-          const processed = processMovers(usdtPairs);
-          setMovers(processed);
-        } else {
-          setBinanceErr("No ticker data received from Binance — possibly geo-blocked or rate-limited.");
-        }
-      }
+    console.log("[CRYPTEX] Ticker result:", tickerResult);
+    console.log("[CRYPTEX] FNG result:", fngRes);
+    console.log("[CRYPTEX] News result:", newsRes);
+
+    if (tickerResult.status==="fulfilled" && tickerResult.value) {
+      const { data: tickerArray, source } = tickerResult.value;
+      newSources.binance = true;
+      setBinanceErr(null);
+      const usdtPairs = tickerArray.filter(t=>t && t.symbol && t.symbol.endsWith("USDT"));
+      setAllTickers(usdtPairs);
+      setTotalScanned(usdtPairs.length);
+      const processed = processMovers(usdtPairs);
+      setMovers(processed);
+      setDataSource(source);
     } else {
-      setBinanceErr(`Failed to reach Binance: ${binanceRes.reason?.message || "Network error"}`);
+      setBinanceErr("All price sources failed. Check your internet connection and try again.");
     }
 
-    if (fngRes.status==="fulfilled") {
+    if (fngRes.status==="fulfilled" && fngRes.value && fngRes.value.data && fngRes.value.data[0]) {
       newSources.fng = true;
       setFng({ value: parseInt(fngRes.value.data[0].value), label: fngRes.value.data[0].value_classification });
     }
 
-    if (newsRes.status==="fulfilled") {
+    if (newsRes.status==="fulfilled" && newsRes.value && Array.isArray(newsRes.value.Data)) {
       newSources.news = true;
-      const items = (newsRes.value.Data||[]).map(n => {
+      const items = newsRes.value.Data.map(n => {
         const t = (n.title+" "+n.body).toLowerCase();
         const pos = ["surge","rally","bull","gain","rise","soar","pump","ath","breakout","adoption","partnership"].some(w=>t.includes(w));
         const neg = ["crash","drop","bear","fall","dump","hack","ban","fear","sell","liquidat","exploit"].some(w=>t.includes(w));
@@ -355,7 +403,7 @@ function CryptoAdvisor() {
     setLastScan(new Date());
     setLoading(false);
     setScanning(false);
-  }, [processMovers]);
+  }, [processMovers, fetchBinanceTickers]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
   useEffect(() => {
@@ -518,7 +566,7 @@ Reply ONLY with valid JSON (no markdown):
               <div style={{ display:"flex", gap:10, marginTop:5, flexWrap:"wrap", alignItems:"center" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:9, color:sources.binance?"#475569":"#1e2535", fontFamily:"'Space Mono',monospace" }}>
                   <span style={{ width:5, height:5, borderRadius:"50%", background:sources.binance?"#00ff88":"#1e2535", display:"inline-block", animation:sources.binance?"blink 2s infinite":"none" }}/>
-                  {scanning ? `SCANNING ${totalScanned} PAIRS...` : `${totalScanned} PAIRS SCANNED`}
+                  {scanning ? `SCANNING ${totalScanned} PAIRS...` : `${totalScanned} PAIRS · ${dataSource}`}
                 </div>
                 {[["fng","Fear&Greed"],["news","News"]].map(([k,l])=>(
                   <div key={k} style={{ display:"flex", alignItems:"center", gap:4, fontSize:9, color:sources[k]?"#475569":"#1e2535", fontFamily:"'Space Mono',monospace" }}>

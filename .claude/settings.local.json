@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://api.binance.com/api/v3/ticker/24hr\" --max-time 15 | python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(type\\(d\\).__name__, len\\(d\\) if isinstance\\(d,list\\) else d\\)\")",
+      "Bash(curl -s \"https://api.alternative.me/fng/?limit=1\" | python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('FNG:', d['data'][0]['value'], d['data'][0]['value_classification']\\)\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code} %{url_effective}\" \"https://muhammad-magdy.github.io/cryptex/\" 2>&1)",
+      "Bash(curl -s \"https://muhammad-magdy.github.io/cryptex/\" | grep -o \"claude-sonnet-4-[^\\\\\"]*\" | head -5)",
+      "Bash(curl -s \"https://muhammad-magdy.github.io/cryptex/\" | grep -o \"binanceErr\\\\|BINANCE API ERROR\\\\|coin\\\\.symbol\\\\|coin\\\\.id\" | head -10)",
+      "Bash(curl -s -I \"https://api.binance.com/api/v3/ticker/24hr\" -H \"Origin: https://muhammad-magdy.github.io\" 2>&1 | grep -i \"access-control\\\\|cors\\\\|http/\")",
+      "WebFetch(domain:muhammad-magdy.github.io)"
+    ]
+  }
+}
