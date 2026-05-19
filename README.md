@@ -21,7 +21,7 @@ An AI-powered crypto day trading tool that scans **300+ Binance pairs** in real-
 | Claude AI | Predictions & analysis |
 
 ## Live URL
-🌐 https://YOUR_USERNAME.github.io/cryptex
+🌐 https://muhammad-magdy.github.io/cryptex
 
 ## ⚠️ Disclaimer
 For educational purposes only. Not financial advice. Crypto trading is high risk. Always use stop losses.
