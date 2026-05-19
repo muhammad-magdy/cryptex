@@ -88,6 +88,64 @@ function calcSignal(change, volSpike, pricePos) {
   return "HOLD";
 }
 
+// Trade Quality Score — combines all metrics into letter grade
+function calcGrade(coin) {
+  let pts = 0;
+  const reasons = []; // {label, points, value} breakdown
+  const { volSpike, dayPos, momentum, change24h, volume24h, dayRange } = coin;
+  const absChange = Math.abs(change24h);
+  const range = parseFloat(dayRange);
+
+  // ─── Volume Spike ───
+  if (volSpike >= 10)      { pts += 4; reasons.push({label:"Volume Spike", points:+4, detail:`${volSpike.toFixed(1)}x — massive interest`}); }
+  else if (volSpike >= 5)  { pts += 3; reasons.push({label:"Volume Spike", points:+3, detail:`${volSpike.toFixed(1)}x — very strong`}); }
+  else if (volSpike >= 3)  { pts += 2; reasons.push({label:"Volume Spike", points:+2, detail:`${volSpike.toFixed(1)}x — strong`}); }
+  else if (volSpike >= 2)  { pts += 1; reasons.push({label:"Volume Spike", points:+1, detail:`${volSpike.toFixed(1)}x — above average`}); }
+  else                     { reasons.push({label:"Volume Spike", points:0, detail:`${volSpike.toFixed(1)}x — normal volume`}); }
+
+  // ─── Day Position ───
+  if (dayPos >= 85)                           { pts -= 4; reasons.push({label:"Day Position", points:-4, detail:`${dayPos}% — CHASING THE TOP ⚠️`}); }
+  else if (dayPos >= 70)                      { pts -= 1; reasons.push({label:"Day Position", points:-1, detail:`${dayPos}% — late entry`}); }
+  else if (dayPos >= 20 && dayPos <= 60)      { pts += 3; reasons.push({label:"Day Position", points:+3, detail:`${dayPos}% — sweet spot ✓`}); }
+  else if (dayPos < 20)                       { pts += 2; reasons.push({label:"Day Position", points:+2, detail:`${dayPos}% — oversold bounce zone`}); }
+  else                                        { reasons.push({label:"Day Position", points:0, detail:`${dayPos}% — neutral`}); }
+
+  // ─── Momentum / Exhaustion ───
+  if (momentum >= 95 && absChange >= 40)      { pts -= 3; reasons.push({label:"Momentum", points:-3, detail:`${momentum} + ${absChange.toFixed(0)}% — parabolic exhaustion ⚠️`}); }
+  else if (momentum >= 60 && momentum <= 85)  { pts += 2; reasons.push({label:"Momentum", points:+2, detail:`${momentum} — strong & healthy`}); }
+  else if (momentum >= 85)                    { reasons.push({label:"Momentum", points:0, detail:`${momentum} — maxed out`}); }
+  else if (momentum <= 15)                    { pts += 1; reasons.push({label:"Momentum", points:+1, detail:`${momentum} — oversold`}); }
+  else                                        { reasons.push({label:"Momentum", points:0, detail:`${momentum} — neutral`}); }
+
+  // ─── Change Quality ───
+  if (absChange >= 5 && absChange <= 25)      { pts += 2; reasons.push({label:"% Change", points:+2, detail:`${change24h.toFixed(1)}% — real move`}); }
+  else if (absChange > 50)                    { pts -= 2; reasons.push({label:"% Change", points:-2, detail:`${change24h.toFixed(1)}% — parabolic ⚠️`}); }
+  else if (absChange < 2)                     { pts -= 1; reasons.push({label:"% Change", points:-1, detail:`${change24h.toFixed(1)}% — barely moving`}); }
+  else                                        { reasons.push({label:"% Change", points:0, detail:`${change24h.toFixed(1)}% — moderate`}); }
+
+  // ─── Liquidity ───
+  if (volume24h >= 50e6)                      { pts += 2; reasons.push({label:"Liquidity", points:+2, detail:`$${(volume24h/1e6).toFixed(0)}M — deep liquidity`}); }
+  else if (volume24h >= 10e6)                 { pts += 1; reasons.push({label:"Liquidity", points:+1, detail:`$${(volume24h/1e6).toFixed(0)}M — good liquidity`}); }
+  else if (volume24h < 1e6)                   { pts -= 2; reasons.push({label:"Liquidity", points:-2, detail:`$${(volume24h/1e3).toFixed(0)}K — manipulation risk ⚠️`}); }
+  else                                        { reasons.push({label:"Liquidity", points:0, detail:`$${(volume24h/1e6).toFixed(1)}M — moderate`}); }
+
+  // ─── Range / Volatility ───
+  if (range > 60)                             { pts -= 1; reasons.push({label:"Volatility", points:-1, detail:`${range.toFixed(0)}% range — very wild`}); }
+  else if (range >= 5 && range <= 30)         { pts += 1; reasons.push({label:"Volatility", points:+1, detail:`${range.toFixed(0)}% range — tradeable`}); }
+  else                                        { reasons.push({label:"Volatility", points:0, detail:`${range.toFixed(1)}% range`}); }
+
+  // Convert to grade
+  let grade, color;
+  if (pts >= 9)      { grade = "A+"; color = "#00ff88"; }
+  else if (pts >= 7) { grade = "A";  color = "#4ade80"; }
+  else if (pts >= 5) { grade = "B";  color = "#facc15"; }
+  else if (pts >= 3) { grade = "C";  color = "#fb923c"; }
+  else if (pts >= 1) { grade = "D";  color = "#f87171"; }
+  else               { grade = "F";  color = "#ef4444"; }
+
+  return { grade, score: pts, color, reasons };
+}
+
 // ── SPARKLINE ────────────────────────────────────────────────
 function Spark({ data, color }) {
   if (!data || data.length < 2) return null;
@@ -122,6 +180,7 @@ function MoverCard({ coin, onAnalyze, analyzing }) {
   const isPos = coin.change24h >= 0;
   const col = SIG_COLOR[coin.signal];
   const isAlert = coin.volSpike >= VOL_SPIKE_THRESHOLD;
+  const [showGrade, setShowGrade] = useState(false);
 
   return (
     <div style={{
@@ -129,6 +188,7 @@ function MoverCard({ coin, onAnalyze, analyzing }) {
       borderRadius:16, padding:16, position:"relative", overflow:"hidden",
       transition:"border-color 0.25s, box-shadow 0.25s",
     }}
+      onClick={()=>setShowGrade(false)}
       onMouseEnter={e=>{ e.currentTarget.style.boxShadow=`0 4px 28px ${col}18`; }}
       onMouseLeave={e=>{ e.currentTarget.style.boxShadow="none"; }}
     >
@@ -147,6 +207,56 @@ function MoverCard({ coin, onAnalyze, analyzing }) {
           <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
             <span style={{ fontFamily:"'Space Mono',monospace", fontWeight:700, fontSize:15, color:"#e2e8f0", letterSpacing:1 }}>{coin.symbol.replace("USDT","")}</span>
             <span style={{ fontSize:9, fontWeight:700, letterSpacing:1.5, color:col, background:col+"18", border:`1px solid ${col}30`, borderRadius:4, padding:"2px 7px" }}>{coin.signal.replace("_"," ")}</span>
+            <span
+              onClick={(e)=>{ e.stopPropagation(); setShowGrade(!showGrade); }}
+              style={{
+                fontSize:11, fontWeight:900, letterSpacing:0.5, color:coin.gradeColor,
+                background:coin.gradeColor+"18", border:`1px solid ${coin.gradeColor}50`,
+                borderRadius:4, padding:"1px 7px", fontFamily:"'Space Mono',monospace",
+                cursor:"pointer", userSelect:"none", position:"relative",
+              }}
+              title="Click to see breakdown"
+            >
+              {coin.grade}
+              {showGrade && (
+                <div onClick={(e)=>e.stopPropagation()}
+                  style={{
+                    position:"absolute", top:"calc(100% + 6px)", left:0, zIndex:50,
+                    minWidth:280, background:"#0a0f1e", border:`1px solid ${coin.gradeColor}40`,
+                    borderRadius:10, padding:"12px 14px", textAlign:"left",
+                    boxShadow:`0 10px 30px rgba(0,0,0,0.6), 0 0 30px ${coin.gradeColor}10`,
+                    fontFamily:"'DM Sans',sans-serif", fontWeight:400,
+                  }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10, paddingBottom:8, borderBottom:"1px solid #1a2535" }}>
+                    <div>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>TRADE QUALITY</div>
+                      <div style={{ fontSize:24, fontWeight:900, color:coin.gradeColor, fontFamily:"'Space Mono',monospace", lineHeight:1 }}>{coin.grade}</div>
+                    </div>
+                    <div style={{ textAlign:"right" }}>
+                      <div style={{ fontSize:9, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>SCORE</div>
+                      <div style={{ fontSize:20, fontWeight:700, color:"#e2e8f0", fontFamily:"'Space Mono',monospace", lineHeight:1 }}>{coin.gradeScore > 0 ? "+" : ""}{coin.gradeScore}</div>
+                    </div>
+                  </div>
+                  {coin.gradeReasons?.map((r, i) => {
+                    const ptCol = r.points > 0 ? "#00ff88" : r.points < 0 ? "#f87171" : "#475569";
+                    return (
+                      <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", fontSize:11, borderBottom: i < coin.gradeReasons.length-1 ? "1px solid #0f1a2e" : "none" }}>
+                        <div>
+                          <div style={{ color:"#94a3b8", fontWeight:500 }}>{r.label}</div>
+                          <div style={{ color:"#475569", fontSize:10, marginTop:1 }}>{r.detail}</div>
+                        </div>
+                        <div style={{ fontFamily:"'Space Mono',monospace", fontWeight:700, color:ptCol, fontSize:13, minWidth:30, textAlign:"right" }}>
+                          {r.points > 0 ? "+" : ""}{r.points}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ marginTop:8, paddingTop:8, borderTop:"1px solid #1a2535", fontSize:9, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", textAlign:"center" }}>
+                    CLICK ANYWHERE TO CLOSE
+                  </div>
+                </div>
+              )}
+            </span>
           </div>
           <div style={{ color:"#475569", fontSize:10, marginTop:2 }}>{coin.name || coin.symbol.replace("USDT","")}</div>
         </div>
@@ -256,7 +366,7 @@ function CryptoAdvisor() {
   const [loadingGlobal, setLoadingGlobal] = useState(false);
   const [tab, setTab]                 = useState("movers"); // movers | watchlist | news
   const [filter, setFilter]           = useState("ALL");
-  const [sortBy, setSortBy]           = useState("spike");
+  const [sortBy, setSortBy]           = useState("grade");
   const [minSpike, setMinSpike]       = useState(2.0);
   const [minChange, setMinChange]     = useState(0);
   const [sources, setSources]         = useState({ binance:false, fng:false, news:false });
@@ -300,13 +410,15 @@ function CryptoAdvisor() {
           return open + (price - open)*progress + (Math.sin(i*0.8)*range*0.15);
         });
 
-        return {
+        const baseCoin = {
           symbol:   t.symbol,
           name:     t.symbol.replace("USDT",""),
           price, change24h:change, high, low, volume24h:vol,
           dayPos, dayRange, volSpike, momentum, stopLoss,
           signal:sig, sparkline:spark,
         };
+        const gradeInfo = calcGrade(baseCoin);
+        return { ...baseCoin, grade: gradeInfo.grade, gradeScore: gradeInfo.score, gradeColor: gradeInfo.color, gradeReasons: gradeInfo.reasons };
       });
   }, []);
 
@@ -517,24 +629,42 @@ Reply ONLY with valid JSON (no markdown):
     .filter(c => {
       if (c.volSpike < minSpike) return false;
       if (Math.abs(c.change24h) < minChange) return false;
-      if (filter==="BUY")  return c.signal==="BUY"||c.signal==="STRONG_BUY";
-      if (filter==="SELL") return c.signal==="SELL"||c.signal==="STRONG_SELL";
+      if (filter==="A+") return c.grade === "A+";
+      if (filter==="A") return c.grade === "A+" || c.grade === "A";
+      if (filter==="B") return c.grade === "B" || c.grade === "A" || c.grade === "A+";
       if (filter==="SPIKE") return c.volSpike >= 3;
       return true;
     })
     .sort((a,b) => {
-      if (sortBy==="spike")  return b.volSpike - a.volSpike;
-      if (sortBy==="change") return Math.abs(b.change24h) - Math.abs(a.change24h);
-      if (sortBy==="volume") return b.volume24h - a.volume24h;
+      // Signal priority — BUY first, then HOLD, then SELL
+      const sigOrder = { STRONG_BUY:0, BUY:1, HOLD:2, SELL:3, STRONG_SELL:4 };
+      const sigDiff = (sigOrder[a.signal] ?? 2) - (sigOrder[b.signal] ?? 2);
+
+      if (sortBy==="grade")  {
+        const gradeDiff = b.gradeScore - a.gradeScore;
+        return gradeDiff !== 0 ? gradeDiff : sigDiff;
+      }
+      if (sortBy==="spike")  {
+        const diff = b.volSpike - a.volSpike;
+        return diff !== 0 ? diff : sigDiff;
+      }
+      if (sortBy==="change") {
+        const diff = Math.abs(b.change24h) - Math.abs(a.change24h);
+        return diff !== 0 ? diff : sigDiff;
+      }
+      if (sortBy==="volume") {
+        const diff = b.volume24h - a.volume24h;
+        return diff !== 0 ? diff : sigDiff;
+      }
       if (sortBy==="signal") { const o={STRONG_BUY:0,BUY:1,HOLD:2,SELL:3,STRONG_SELL:4}; return (o[a.signal]??2)-(o[b.signal]??2); }
       return 0;
     })
     .slice(0, 60); // show top 60
 
   const stats = {
-    buy:  movers.filter(c=>c.volSpike>=minSpike&&(c.signal==="BUY"||c.signal==="STRONG_BUY")).length,
-    hold: movers.filter(c=>c.volSpike>=minSpike&&c.signal==="HOLD").length,
-    sell: movers.filter(c=>c.volSpike>=minSpike&&(c.signal==="SELL"||c.signal==="STRONG_SELL")).length,
+    aPlus: movers.filter(c=>c.grade==="A+").length,
+    a: movers.filter(c=>c.grade==="A").length,
+    b: movers.filter(c=>c.grade==="B").length,
     spike: movers.filter(c=>c.volSpike>=3).length,
   };
   const sentCol = {BULLISH:"#00ff88",BEARISH:"#f87171",NEUTRAL:"#facc15",VOLATILE:"#fb923c"};
@@ -584,10 +714,10 @@ Reply ONLY with valid JSON (no markdown):
                 <div style={{ fontFamily:"'Space Mono',monospace", fontSize:18, fontWeight:700, color:"#fb923c" }}>{stats.spike}</div>
                 <div style={{ fontSize:8, color:"#1e2535", letterSpacing:1 }}>🔥 SPIKES</div>
               </div>
-              {[["BUY",stats.buy,"#00ff88"],["HOLD",stats.hold,"#facc15"],["SELL",stats.sell,"#f87171"]].map(([l,v,c])=>(
+              {[["A+",stats.aPlus,"#00ff88"],["A",stats.a,"#4ade80"],["B",stats.b,"#facc15"]].map(([l,v,c])=>(
                 <div key={l} style={{ textAlign:"center" }}>
                   <div style={{ fontFamily:"'Space Mono',monospace", fontSize:18, fontWeight:700, color:c }}>{v}</div>
-                  <div style={{ fontSize:8, color:"#1e2535", letterSpacing:1 }}>{l}</div>
+                  <div style={{ fontSize:8, color:"#1e2535", letterSpacing:1 }}>GRADE {l}</div>
                 </div>
               ))}
               {fng && (
@@ -659,11 +789,11 @@ Reply ONLY with valid JSON (no markdown):
           {/* Filters */}
           {tab==="movers" && (
             <div style={{ display:"flex", gap:6, marginLeft:"auto", alignItems:"center", flexWrap:"wrap" }}>
-              {[["ALL","#64748b"],["SPIKE","#fb923c"],["BUY","#00ff88"],["SELL","#f87171"]].map(([f,c])=>(
+              {[["ALL","#64748b"],["A+","#00ff88"],["A","#4ade80"],["B","#facc15"],["SPIKE","#fb923c"]].map(([f,c])=>(
                 <button key={f} onClick={()=>setFilter(f)} style={{ padding:"4px 12px", borderRadius:5, background:filter===f?c+"12":"rgba(255,255,255,0.02)", border:`1px solid ${filter===f?c+"40":"#0f1a2e"}`, color:filter===f?c:"#334155", fontSize:9, fontWeight:700, cursor:"pointer", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>{f}</button>
               ))}
               <div style={{ width:1, height:14, background:"#0f1a2e" }}/>
-              {[["spike","VOL SPIKE"],["change","% MOVE"],["volume","VOLUME"]].map(([s,l])=>(
+              {[["grade","⭐ GRADE"],["spike","VOL SPIKE"],["change","% MOVE"],["volume","VOLUME"]].map(([s,l])=>(
                 <button key={s} onClick={()=>setSortBy(s)} style={{ padding:"4px 10px", borderRadius:5, background:sortBy===s?"rgba(0,255,136,0.07)":"rgba(255,255,255,0.02)", border:`1px solid ${sortBy===s?"rgba(0,255,136,0.2)":"#0f1a2e"}`, color:sortBy===s?"#00ff88":"#334155", fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace" }}>{l}</button>
               ))}
               <div style={{ width:1, height:14, background:"#0f1a2e" }}/>
