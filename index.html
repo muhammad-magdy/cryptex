@@ -157,6 +157,31 @@ function calcGrade(coin) {
   return { grade, score: pts, color, reasons };
 }
 
+// ── SELL ADVICE ───────────────────────────────────────────────
+function getSellAdvice(trade, liveCoin) {
+  if (!liveCoin) return null;
+  const { grade, dayPos, momentum } = liveCoin;
+  const gradeNum = { 'A+':6, 'A':5, 'B':4, 'C':3, 'D':2, 'F':1 };
+  const entryNum = gradeNum[trade.entryGrade] || 3;
+  const curNum   = gradeNum[grade] || 3;
+
+  if (grade === 'F' || (grade === 'D' && momentum < 35))
+    return { advice:'CLOSE NOW',    color:'#ef4444', reason:`Grade ${grade} + weak momentum` };
+  if (dayPos > 88)
+    return { advice:'CLOSE NOW',    color:'#ef4444', reason:`Price at ${dayPos}% of day range` };
+  if (momentum < 20)
+    return { advice:'CLOSE NOW',    color:'#ef4444', reason:`Momentum collapsed (${momentum})` };
+  if (curNum <= entryNum - 2)
+    return { advice:'CLOSE NOW',    color:'#ef4444', reason:`Grade: ${trade.entryGrade} → ${grade}` };
+  if (dayPos > 72)
+    return { advice:'TIGHTEN STOP', color:'#facc15', reason:`Day pos ${dayPos}% — near ceiling` };
+  if (momentum < 38)
+    return { advice:'TIGHTEN STOP', color:'#facc15', reason:`Momentum weakening (${momentum})` };
+  if (curNum < entryNum)
+    return { advice:'TIGHTEN STOP', color:'#facc15', reason:`Grade: ${trade.entryGrade} → ${grade}` };
+  return   { advice:'HOLD',         color:'#00ff88', reason:`${grade} grade · momentum ${momentum}` };
+}
+
 // ── SPARKLINE ────────────────────────────────────────────────
 function Spark({ data, color }) {
   if (!data || data.length < 2) return null;
@@ -663,6 +688,30 @@ function CryptoAdvisor() {
     return () => clearInterval(t);
   }, [fetchAll]);
 
+  // Auto-close: check stop losses each time movers refreshes
+  useEffect(() => {
+    if (!movers.length) return;
+    const liveMap = {};
+    movers.forEach(c => { liveMap[c.symbol] = c.price; });
+    setTrades(prev => {
+      let changed = false;
+      const next = prev.map(t => {
+        if (t.status !== 'open' || !t.autoClose || !t.stopLoss) return t;
+        const lp = liveMap[t.symbol];
+        if (!lp || lp > t.stopLoss) return t;
+        changed = true;
+        return {
+          ...t, status:'closed', exitPrice:lp,
+          closedAt: new Date().toISOString(),
+          pnlEur: (lp - t.entryPrice) * t.tokens,
+          pnlPct: ((lp - t.entryPrice) / t.entryPrice) * 100,
+          closedReason: 'auto-close: stop loss hit',
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [movers]);
+
   // ── Open a paper trade ────────────────────────────────────
   const openTrade = (coin, amountEur) => {
     const tokens = amountEur / coin.price;
@@ -677,6 +726,8 @@ function CryptoAdvisor() {
       tokens: tokens,
       openedAt: new Date().toISOString(),
       status: "open",
+      stopLoss: coin.stopLoss,
+      autoClose: false,
     };
     setTrades(prev => [newTrade, ...prev]);
     setTradeModal(null);
@@ -696,6 +747,10 @@ function CryptoAdvisor() {
   const deleteTrade = (tradeId) => {
     if (!confirm("Delete this trade record?")) return;
     setTrades(prev => prev.filter(t => t.id !== tradeId));
+  };
+
+  const toggleAutoClose = (tradeId) => {
+    setTrades(prev => prev.map(t => t.id === tradeId ? { ...t, autoClose: !t.autoClose } : t));
   };
 
   // Build a price lookup for live P&L
@@ -1097,13 +1152,23 @@ Reply ONLY with valid JSON (no markdown):
                           const pnlCol = t.livePct >= 0 ? "#00ff88" : "#f87171";
                           const mins = Math.floor((Date.now() - new Date(t.openedAt))/60000);
                           const dur = mins < 60 ? `${mins}m` : `${Math.floor(mins/60)}h ${mins%60}m`;
+                          const liveCoin = movers.find(c => c.symbol === t.symbol);
+                          const sellAdvice = getSellAdvice(t, liveCoin);
+                          const borderCol = sellAdvice?.advice === 'CLOSE NOW' ? '#ef444450' : sellAdvice?.advice === 'TIGHTEN STOP' ? '#facc1538' : `${pnlCol}30`;
                           return (
-                            <div key={t.id} style={{ background:"rgba(10,14,26,0.97)", border:`1px solid ${pnlCol}30`, borderRadius:12, padding:14 }}>
-                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                            <div key={t.id} style={{ background:"rgba(10,14,26,0.97)", border:`1px solid ${borderCol}`, borderRadius:12, padding:14 }}>
+
+                              {/* Header */}
+                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
                                 <div>
-                                  <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                                  <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
                                     <span style={{ fontFamily:"'Space Mono',monospace", fontSize:14, fontWeight:700, color:"#e2e8f0" }}>{t.symbol.replace("USDT","")}</span>
                                     <span style={{ fontSize:9, color:"#475569", fontFamily:"'Space Mono',monospace" }}>· {dur} ago</span>
+                                    {liveCoin && (
+                                      <span style={{ fontSize:9, fontWeight:700, color:liveCoin.gradeColor, background:liveCoin.gradeColor+"18", border:`1px solid ${liveCoin.gradeColor}40`, borderRadius:3, padding:"1px 5px", fontFamily:"'Space Mono',monospace" }}>
+                                        {liveCoin.grade}
+                                      </span>
+                                    )}
                                   </div>
                                   <div style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{t.tokens.toFixed(t.entryPrice>1?4:2)} tokens · entered ${fmt(t.entryPrice)}</div>
                                 </div>
@@ -1112,11 +1177,57 @@ Reply ONLY with valid JSON (no markdown):
                                   <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace", color:pnlCol }}>{t.liveEur>=0?"+":""}€{t.liveEur.toFixed(2)}</div>
                                 </div>
                               </div>
-                              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", marginBottom:10 }}>
+
+                              {/* Should I sell? advice */}
+                              {sellAdvice && (
+                                <div style={{ background:sellAdvice.color+"12", border:`1px solid ${sellAdvice.color}40`, borderRadius:6, padding:"6px 10px", marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                  <span style={{ fontSize:10, fontWeight:700, color:sellAdvice.color, fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>{sellAdvice.advice}</span>
+                                  <span style={{ fontSize:9, color:"#64748b" }}>{sellAdvice.reason}</span>
+                                </div>
+                              )}
+
+                              {/* Live metrics */}
+                              {liveCoin && (
+                                <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:4, background:"rgba(0,0,0,0.28)", borderRadius:7, padding:"7px 10px", marginBottom:8 }}>
+                                  <div style={{ textAlign:"center" }}>
+                                    <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>GRADE</div>
+                                    <div style={{ fontSize:12, fontWeight:700, color:liveCoin.gradeColor, fontFamily:"'Space Mono',monospace" }}>{liveCoin.grade}</div>
+                                  </div>
+                                  <div style={{ textAlign:"center" }}>
+                                    <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>SPIKE</div>
+                                    <div style={{ fontSize:12, fontWeight:700, fontFamily:"'Space Mono',monospace", color:liveCoin.volSpike>=5?"#ef4444":liveCoin.volSpike>=3?"#fb923c":liveCoin.volSpike>=2?"#facc15":"#4ade80" }}>{liveCoin.volSpike.toFixed(1)}x</div>
+                                  </div>
+                                  <div style={{ textAlign:"center" }}>
+                                    <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>MOMENTUM</div>
+                                    <div style={{ fontSize:12, fontWeight:700, fontFamily:"'Space Mono',monospace", color:liveCoin.momentum>60?"#00ff88":liveCoin.momentum<40?"#f87171":"#facc15" }}>{liveCoin.momentum}</div>
+                                  </div>
+                                  <div style={{ textAlign:"center" }}>
+                                    <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>DAY POS</div>
+                                    <div style={{ fontSize:12, fontWeight:700, fontFamily:"'Space Mono',monospace", color:liveCoin.dayPos>75?"#f87171":liveCoin.dayPos<25?"#00b4ff":"#64748b" }}>{liveCoin.dayPos}%</div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Price row */}
+                              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", marginBottom:8 }}>
                                 <span>Now: ${fmt(t.livePrice)}</span>
                                 <span>Invested: €{t.amountEur.toFixed(2)}</span>
-                                <span>Now worth: €{(t.amountEur + t.liveEur).toFixed(2)}</span>
+                                <span>Worth: €{(t.amountEur + t.liveEur).toFixed(2)}</span>
                               </div>
+
+                              {/* Stop loss + auto-close toggle */}
+                              {t.stopLoss && (
+                                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"rgba(248,113,113,0.05)", border:"1px solid rgba(248,113,113,0.14)", borderRadius:6, padding:"5px 10px", marginBottom:8 }}>
+                                  <div style={{ fontSize:9, fontFamily:"'Space Mono',monospace" }}>
+                                    <span style={{ color:"#334155" }}>STOP </span>
+                                    <span style={{ color:"#f87171" }}>${fmt(t.stopLoss)}</span>
+                                  </div>
+                                  <button onClick={()=>toggleAutoClose(t.id)} style={{ padding:"3px 10px", borderRadius:4, background:t.autoClose?"rgba(248,113,113,0.15)":"rgba(255,255,255,0.04)", border:`1px solid ${t.autoClose?"rgba(248,113,113,0.5)":"#1e2535"}`, color:t.autoClose?"#f87171":"#334155", fontSize:8, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>
+                                    AUTO-CLOSE {t.autoClose?"ON ●":"OFF ○"}
+                                  </button>
+                                </div>
+                              )}
+
                               <button onClick={()=>closeTrade(t.id, t.livePrice)} style={{ width:"100%", padding:"6px", borderRadius:6, background:"rgba(248,113,113,0.08)", border:"1px solid rgba(248,113,113,0.3)", color:"#f87171", fontSize:10, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:1.5 }}>
                                 ✕ CLOSE TRADE
                               </button>
