@@ -589,6 +589,8 @@ function CryptoAdvisor() {
   const [binanceErr, setBinanceErr]   = useState(null);
   const [dataSource, setDataSource]   = useState("Binance");
   const [notification, setNotification] = useState(null); // auto-close banner
+  const [histFilter, setHistFilter]   = useState("all");  // history filter
+  const [histSort, setHistSort]       = useState("newest"); // history sort
   const tradesRef = useRef(null); // always holds latest trades for auto-close effect
 
   // ── Process Binance tickers into early movers ──────────────
@@ -775,7 +777,8 @@ function CryptoAdvisor() {
         changed = true;
         fired.push({ symbol: t.symbol.replace("USDT",""), price: lp, reason, pnlPct: currentPnlPct });
         return { ...base, status:'closed', exitPrice:lp, closedAt:new Date().toISOString(),
-          pnlEur:(lp-t.entryPrice)*t.tokens, pnlPct:currentPnlPct, exitReason:reason };
+          pnlEur:(lp-t.entryPrice)*t.tokens, pnlPct:currentPnlPct, exitReason:reason,
+          closedBy:'auto', durationMs: new Date().getTime() - new Date(t.openedAt).getTime() };
       };
 
       // UNIVERSAL — recommended stop loss always fires first
@@ -825,6 +828,10 @@ function CryptoAdvisor() {
       peakPrice: coin.price,
       peakPnlPct: 0,
       autoClose: true,
+      entryDayPos: coin.dayPos,
+      entryMomentum: coin.momentum,
+      entryVolSpike: coin.volSpike,
+      entryVolume24h: coin.volume24h,
     };
     setTrades(prev => [newTrade, ...prev]);
     setTradeModal(null);
@@ -839,6 +846,8 @@ function CryptoAdvisor() {
       pnlEur: (currentPrice - t.entryPrice) * t.tokens,
       pnlPct: ((currentPrice - t.entryPrice) / t.entryPrice) * 100,
       exitReason: "Manual close",
+      closedBy: "manual",
+      durationMs: new Date().getTime() - new Date(t.openedAt).getTime(),
     } : t));
   };
 
@@ -1232,6 +1241,59 @@ Reply ONLY with valid JSON (no markdown):
               const wins = closedTrades.filter(t=>(t.pnlEur||0) > 0).length;
               const winRate = closedTrades.length > 0 ? (wins/closedTrades.length*100).toFixed(0) : 0;
 
+              // ── Journal helpers ──────────────────────────────
+              const stratEmoji = s => (s||"bank")==="ride"?"🌊":"🛡️";
+              const fmtDur = ms => {
+                if (!ms) return "—";
+                const m = Math.floor(ms/60000);
+                return m < 60 ? `${m}m` : `${Math.floor(m/60)}h ${m%60}m`;
+              };
+              const GCOL = {'A+':'#00ff88','A':'#4ade80','B':'#facc15','C':'#fb923c','D':'#f87171','F':'#ef4444'};
+              const gcol = g => GCOL[g] || "#475569";
+              const avgPnl = arr => arr.length ? arr.reduce((s,t)=>s+(t.pnlEur||0),0)/arr.length : 0;
+              const winRateOf = arr => arr.length ? (arr.filter(t=>(t.pnlEur||0)>0).length/arr.length*100).toFixed(0) : "0";
+              const RLABELS = {
+                "Hit recommended stop loss from entry": "Hit stop loss",
+                "Peak confirmed — price dropped 5% from peak": "Peak confirmed",
+                "Day Pos at top, banking profits": "Day Pos at top",
+                "Grade dropped below safe level": "Grade dropped",
+                "Manual close": "Manual close",
+              };
+
+              // ── Performance stats ────────────────────────────
+              const closedWins   = closedTrades.filter(t=>(t.pnlEur||0)>0);
+              const closedLosses = closedTrades.filter(t=>(t.pnlEur||0)<=0);
+              const totalPnlClosed = closedTrades.reduce((s,t)=>s+(t.pnlEur||0),0);
+              const bestTrade  = closedTrades.length ? [...closedTrades].sort((a,b)=>(b.pnlEur||0)-(a.pnlEur||0))[0] : null;
+              const worstTrade = closedTrades.length ? [...closedTrades].sort((a,b)=>(a.pnlEur||0)-(b.pnlEur||0))[0] : null;
+              const byStrat = { ride:[], bank:[] };
+              closedTrades.forEach(t => { const s=t.strategy||"bank"; if(byStrat[s]) byStrat[s].push(t); });
+              const byGrade = {};
+              const GRADE_ORDER = ['A+','A','B','C','D','F'];
+              closedTrades.forEach(t => { const g=t.entryGrade||"?"; if(!byGrade[g]) byGrade[g]=[]; byGrade[g].push(t); });
+              const byReason = {};
+              closedTrades.forEach(t => {
+                const r = RLABELS[t.exitReason] || t.exitReason || "Other";
+                if(!byReason[r]) byReason[r]=[]; byReason[r].push(t);
+              });
+
+              // ── Filtered + sorted history ────────────────────
+              const filteredHistory = closedTrades
+                .filter(t => {
+                  if (histFilter==="ride")   return (t.strategy||"bank")==="ride";
+                  if (histFilter==="bank")   return (t.strategy||"bank")==="bank";
+                  if (histFilter==="wins")   return (t.pnlEur||0)>0;
+                  if (histFilter==="losses") return (t.pnlEur||0)<=0;
+                  if (histFilter==="auto")   return t.closedBy==="auto";
+                  if (histFilter==="manual") return !t.closedBy||t.closedBy==="manual";
+                  return true;
+                })
+                .sort((a,b) => {
+                  if (histSort==="oldest") return new Date(a.closedAt)-new Date(b.closedAt);
+                  if (histSort==="profit") return (b.pnlEur||0)-(a.pnlEur||0);
+                  return new Date(b.closedAt)-new Date(a.closedAt);
+                });
+
               return (
                 <>
                   {/* Portfolio summary */}
@@ -1390,34 +1452,167 @@ Reply ONLY with valid JSON (no markdown):
                     </>
                   )}
 
-                  {/* Closed trades */}
+                  {/* ── PERFORMANCE SUMMARY ── */}
+                  {closedTrades.length > 0 && (
+                    <div style={{ background:"rgba(0,0,0,0.32)", border:"1px solid #1a2535", borderRadius:12, padding:16, marginBottom:20 }}>
+                      <div style={{ fontSize:10, color:"#475569", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:14 }}>📊 PERFORMANCE SUMMARY</div>
+
+                      {/* Top stat tiles */}
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))", gap:8, marginBottom:12 }}>
+                        {[
+                          ["TOTAL TRADES", String(closedTrades.length), "#e2e8f0"],
+                          ["WIN RATE",     `${winRateOf(closedTrades)}%`, "#facc15"],
+                          ["TOTAL P&L",    `${totalPnlClosed>=0?"+":""}€${totalPnlClosed.toFixed(2)}`, totalPnlClosed>=0?"#00ff88":"#f87171"],
+                          ["AVG WIN",      closedWins.length   ? `+€${avgPnl(closedWins).toFixed(2)}`   : "—", "#00ff88"],
+                          ["AVG LOSS",     closedLosses.length ? `€${avgPnl(closedLosses).toFixed(2)}`  : "—", "#f87171"],
+                        ].map(([l,v,c])=>(
+                          <div key={l} style={{ background:"rgba(255,255,255,0.025)", borderRadius:8, padding:"8px 10px" }}>
+                            <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:3 }}>{l}</div>
+                            <div style={{ fontSize:13, fontWeight:700, color:c, fontFamily:"'Space Mono',monospace" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Best / Worst */}
+                      {(bestTrade || worstTrade) && (
+                        <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+                          {bestTrade && (
+                            <div style={{ flex:1, minWidth:120, background:"rgba(0,255,136,0.05)", border:"1px solid rgba(0,255,136,0.15)", borderRadius:8, padding:"7px 10px" }}>
+                              <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>BEST TRADE</div>
+                              <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace" }}>
+                                <span style={{ color:"#e2e8f0", fontWeight:700 }}>{bestTrade.symbol.replace("USDT","")}</span>
+                                <span style={{ color:"#00ff88" }}> +€{(bestTrade.pnlEur||0).toFixed(2)}</span>
+                                <span style={{ marginLeft:5 }}>{stratEmoji(bestTrade.strategy)}</span>
+                              </div>
+                            </div>
+                          )}
+                          {worstTrade && (
+                            <div style={{ flex:1, minWidth:120, background:"rgba(248,113,113,0.05)", border:"1px solid rgba(248,113,113,0.15)", borderRadius:8, padding:"7px 10px" }}>
+                              <div style={{ fontSize:8, color:"#334155", letterSpacing:1, fontFamily:"'Space Mono',monospace", marginBottom:2 }}>WORST TRADE</div>
+                              <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace" }}>
+                                <span style={{ color:"#e2e8f0", fontWeight:700 }}>{worstTrade.symbol.replace("USDT","")}</span>
+                                <span style={{ color:"#f87171" }}> €{(worstTrade.pnlEur||0).toFixed(2)}</span>
+                                <span style={{ marginLeft:5 }}>{stratEmoji(worstTrade.strategy)}</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Breakdowns */}
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))", gap:14 }}>
+
+                        {/* By Strategy */}
+                        <div>
+                          <div style={{ fontSize:8, color:"#334155", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:6, paddingBottom:5, borderBottom:"1px solid #0f1a2e" }}>BY STRATEGY</div>
+                          {["ride","bank"].map(s => {
+                            const arr = byStrat[s];
+                            if (!arr.length) return null;
+                            const ap = avgPnl(arr);
+                            return (
+                              <div key={s} style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", marginBottom:5 }}>
+                                <span>{stratEmoji(s)} {s==="ride"?"Ride":"Bank"}</span>
+                                <span>{arr.length} · {winRateOf(arr)}% · <span style={{ color:ap>=0?"#00ff88":"#f87171" }}>{ap>=0?"+":""}€{ap.toFixed(2)}</span></span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* By Entry Grade */}
+                        <div>
+                          <div style={{ fontSize:8, color:"#334155", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:6, paddingBottom:5, borderBottom:"1px solid #0f1a2e" }}>BY ENTRY GRADE</div>
+                          {GRADE_ORDER.filter(g=>byGrade[g]?.length).map(g => {
+                            const arr = byGrade[g];
+                            const ap = avgPnl(arr);
+                            return (
+                              <div key={g} style={{ display:"flex", justifyContent:"space-between", fontSize:10, fontFamily:"'Space Mono',monospace", marginBottom:5 }}>
+                                <span style={{ color:gcol(g), fontWeight:700 }}>{g}</span>
+                                <span style={{ color:"#475569" }}>{arr.length} · <span style={{ color:ap>=0?"#00ff88":"#f87171" }}>{ap>=0?"+":""}€{ap.toFixed(2)}</span></span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* By Exit Reason */}
+                        <div>
+                          <div style={{ fontSize:8, color:"#334155", letterSpacing:1.5, fontFamily:"'Space Mono',monospace", marginBottom:6, paddingBottom:5, borderBottom:"1px solid #0f1a2e" }}>BY EXIT REASON</div>
+                          {Object.entries(byReason).map(([r,arr]) => {
+                            const ap = avgPnl(arr);
+                            return (
+                              <div key={r} style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", marginBottom:5, gap:4 }}>
+                                <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{r}</span>
+                                <span style={{ flexShrink:0 }}>{arr.length} · <span style={{ color:ap>=0?"#00ff88":"#f87171" }}>{ap>=0?"+":""}€{ap.toFixed(2)}</span></span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── HISTORY FILTER + SORT BAR ── */}
+                  {closedTrades.length > 0 && (
+                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center", marginBottom:10 }}>
+                      {[["all","All"],["ride","🌊 Ride"],["bank","🛡️ Bank"],["wins","✅ Wins"],["losses","❌ Losses"],["auto","🤖 Auto"],["manual","✋ Manual"]].map(([f,l])=>(
+                        <button key={f} onClick={()=>setHistFilter(f)} style={{ padding:"4px 10px", borderRadius:5, background:histFilter===f?"rgba(0,255,136,0.10)":"rgba(255,255,255,0.02)", border:`1px solid ${histFilter===f?"rgba(0,255,136,0.30)":"#0f1a2e"}`, color:histFilter===f?"#00ff88":"#334155", fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:"'Space Mono',monospace", letterSpacing:0.5 }}>{l}</button>
+                      ))}
+                      <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+                        <span style={{ fontSize:9, color:"#334155", fontFamily:"'Space Mono',monospace" }}>SORT</span>
+                        <select value={histSort} onChange={e=>setHistSort(e.target.value)} style={{ padding:"4px 8px", borderRadius:5, background:"#0a0f1e", border:"1px solid #1a2535", color:"#64748b", fontSize:9, cursor:"pointer", fontFamily:"'Space Mono',monospace", outline:"none" }}>
+                          <option value="newest">Newest first</option>
+                          <option value="oldest">Oldest first</option>
+                          <option value="profit">Biggest profit</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── HISTORY TABLE ── */}
                   {closedTrades.length > 0 && (
                     <>
-                      <div style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", letterSpacing:1.5, marginBottom:10 }}>○ HISTORY ({closedTrades.length})</div>
-                      <div style={{ background:"rgba(0,0,0,0.3)", border:"1px solid #0f1a2e", borderRadius:10, overflow:"hidden" }}>
-                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 30px", gap:8, padding:"8px 12px", background:"rgba(255,255,255,0.02)", fontSize:9, color:"#334155", letterSpacing:1.5, fontFamily:"'Space Mono',monospace" }}>
-                          <div>SYMBOL</div><div>ENTRY</div><div>EXIT</div><div>P&L €</div><div>P&L %</div><div></div>
-                        </div>
-                        {closedTrades.map(t => {
-                          const col = (t.pnlEur||0) >= 0 ? "#00ff88" : "#f87171";
-                          return (
-                            <div key={t.id} style={{ borderTop:"1px solid #0f1a2e" }}>
-                              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 30px", gap:8, padding:`10px 12px ${t.exitReason?"4px":"10px"}`, fontSize:11, fontFamily:"'Space Mono',monospace", alignItems:"center" }}>
-                                <div style={{ color:"#e2e8f0", fontWeight:700 }}>{t.symbol.replace("USDT","")}</div>
+                      <div style={{ fontSize:10, color:"#475569", fontFamily:"'Space Mono',monospace", letterSpacing:1.5, marginBottom:8 }}>
+                        ○ HISTORY ({filteredHistory.length}{histFilter!=="all"?` of ${closedTrades.length}`:""})
+                      </div>
+                      <div style={{ overflowX:"auto", border:"1px solid #0f1a2e", borderRadius:10 }}>
+                        <div style={{ minWidth:820 }}>
+                          {/* Header */}
+                          <div style={{ display:"grid", gridTemplateColumns:"70px 28px 52px 52px 80px 80px 72px 72px 62px 54px 1fr 26px", gap:6, padding:"8px 12px", background:"rgba(255,255,255,0.02)", fontSize:8, color:"#334155", letterSpacing:1.2, fontFamily:"'Space Mono',monospace" }}>
+                            <div>SYMBOL</div><div>STG</div><div>GRADE</div><div>DAY POS</div><div>ENTRY</div><div>EXIT</div><div>PEAK</div><div>P&L €</div><div>P&L %</div><div>DUR</div><div>REASON</div><div>BY</div>
+                          </div>
+                          {/* Rows */}
+                          {filteredHistory.map(t => {
+                            const col = (t.pnlEur||0)>=0?"#00ff88":"#f87171";
+                            const gc  = gcol(t.entryGrade);
+                            const dur = fmtDur(t.durationMs);
+                            const reasonShort = RLABELS[t.exitReason] || t.exitReason || "—";
+                            const peakStr = (t.peakPnlPct||0)>0.01 ? `+${(t.peakPnlPct||0).toFixed(1)}%` : "—";
+                            const dpStr = t.entryDayPos != null ? `${t.entryDayPos}%` : "—";
+                            const dpCol = t.entryDayPos > 75 ? "#f87171" : t.entryDayPos < 25 ? "#00b4ff" : "#64748b";
+                            return (
+                              <div key={t.id} style={{ display:"grid", gridTemplateColumns:"70px 28px 52px 52px 80px 80px 72px 72px 62px 54px 1fr 26px", gap:6, padding:"9px 12px", borderTop:"1px solid #0f1a2e", fontSize:10, fontFamily:"'Space Mono',monospace", alignItems:"center" }}>
+                                <div style={{ color:"#e2e8f0", fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.symbol.replace("USDT","")}</div>
+                                <div style={{ fontSize:14 }}>{stratEmoji(t.strategy)}</div>
+                                <div>{t.entryGrade ? <span style={{ color:gc, background:gc+"18", border:`1px solid ${gc}35`, borderRadius:3, padding:"1px 5px", fontSize:9, fontWeight:700 }}>{t.entryGrade}</span> : <span style={{ color:"#334155" }}>—</span>}</div>
+                                <div style={{ color:dpCol }}>{dpStr}</div>
                                 <div style={{ color:"#94a3b8" }}>${fmt(t.entryPrice)}</div>
                                 <div style={{ color:"#94a3b8" }}>${fmt(t.exitPrice)}</div>
+                                <div style={{ color:"#facc15" }}>{peakStr}</div>
                                 <div style={{ color:col, fontWeight:700 }}>{(t.pnlEur||0)>=0?"+":""}€{(t.pnlEur||0).toFixed(2)}</div>
                                 <div style={{ color:col, fontWeight:700 }}>{(t.pnlPct||0)>=0?"+":""}{(t.pnlPct||0).toFixed(2)}%</div>
-                                <button onClick={()=>deleteTrade(t.id)} style={{ background:"transparent", border:"none", color:"#475569", cursor:"pointer", fontSize:14 }}>×</button>
-                              </div>
-                              {t.exitReason && (
-                                <div style={{ padding:"0 12px 8px", fontSize:9, color:"#334155", fontFamily:"'Space Mono',monospace", letterSpacing:0.5 }}>
-                                  ↳ {t.exitReason}
+                                <div style={{ color:"#475569" }}>{dur}</div>
+                                <div style={{ color:"#334155", fontSize:9, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={t.exitReason||""}>{reasonShort}</div>
+                                <div>{t.closedBy==="auto" ? <span title="Auto-close">🤖</span> : <span title="Manual">✋</span>}
+                                  <button onClick={()=>deleteTrade(t.id)} style={{ background:"transparent", border:"none", color:"#334155", cursor:"pointer", fontSize:13, marginLeft:2, lineHeight:1 }}>×</button>
                                 </div>
-                              )}
+                              </div>
+                            );
+                          })}
+                          {filteredHistory.length===0 && (
+                            <div style={{ padding:"20px", textAlign:"center", fontSize:10, color:"#334155", fontFamily:"'Space Mono',monospace", letterSpacing:1 }}>
+                              NO TRADES MATCH THIS FILTER
                             </div>
-                          );
-                        })}
+                          )}
+                        </div>
                       </div>
                     </>
                   )}
