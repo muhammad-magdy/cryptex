@@ -785,6 +785,11 @@ function CryptoAdvisor() {
       if (lp <= recStop)
         return autoClose("Hit recommended stop loss from entry");
 
+      // RULE 2 — advisor says CLOSE NOW while trade is in loss
+      // Uses the same getSellAdvice() that drives the red banner, so they always match
+      if (currentPnlPct < 0 && liveCoin && getSellAdvice(t, liveCoin)?.advice === 'CLOSE NOW')
+        return autoClose("Advisor signaled CLOSE NOW while in loss");
+
       // RIDE — trailing 5% from peak (only once peak P&L ≥ 5%)
       if (strategy === "ride") {
         if (newPeakPct >= 5 && lp <= newPeak * 0.95)
